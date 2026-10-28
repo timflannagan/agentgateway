@@ -30,6 +30,107 @@ pub mod from_responses {
 		})
 	}
 
+	/// Fold consecutive assistant messages from one Responses turn into a single message.
+	///
+	/// Responses input keeps a turn's text and function calls as separate items, in the order
+	/// they were produced, so text can follow the calls it belongs to. Translated one item at a
+	/// time, that splits a turn into several assistant messages and can separate tool results
+	/// from their calls. Providers that require tool results to follow their calls reject that.
+	/// Empty assistant messages carry nothing and are dropped.
+	fn merge_assistant_messages(
+		messages: Vec<completions::RequestMessage>,
+	) -> Vec<completions::RequestMessage> {
+		use completions::{RequestAssistantMessageContent as Content, RequestMessage};
+
+		fn is_empty(message: &completions::RequestAssistantMessage) -> bool {
+			let no_content = match &message.content {
+				None => true,
+				Some(Content::Text(text)) => text.is_empty(),
+				Some(Content::Array(parts)) => parts.is_empty(),
+			};
+			no_content
+				&& message
+					.tool_calls
+					.as_ref()
+					.is_none_or(|calls| calls.is_empty())
+				&& message.refusal.is_none()
+				&& message.audio.is_none()
+				&& message.function_call.is_none()
+				&& message.reasoning_content.is_none()
+		}
+
+		fn append_content(into: &mut Option<Content>, from: Option<Content>) {
+			let Some(from) = from else { return };
+			*into = Some(match (into.take(), from) {
+				(None, from) => from,
+				(Some(Content::Text(a)), Content::Text(b)) if a.is_empty() => Content::Text(b),
+				(Some(Content::Text(a)), Content::Text(b)) if b.is_empty() => Content::Text(a),
+				(Some(Content::Text(a)), Content::Text(b)) => Content::Text(format!("{a}\n{b}")),
+				(Some(a), b) => {
+					let mut parts = into_parts(a);
+					parts.extend(into_parts(b));
+					Content::Array(parts)
+				},
+			});
+		}
+
+		fn into_parts(content: Content) -> Vec<completions::RequestAssistantMessageContentPart> {
+			match content {
+				Content::Array(parts) => parts,
+				Content::Text(text) if text.is_empty() => vec![],
+				Content::Text(text) => vec![completions::RequestAssistantMessageContentPart::Text(
+					completions::RequestMessageContentPartText {
+						text,
+						prompt_cache_breakpoint: None,
+					},
+				)],
+			}
+		}
+
+		let mut out: Vec<RequestMessage> = Vec::with_capacity(messages.len());
+		for message in messages {
+			let RequestMessage::Assistant(next) = message else {
+				out.push(message);
+				continue;
+			};
+			if is_empty(&next) {
+				continue;
+			}
+			let Some(RequestMessage::Assistant(prev)) = out.last_mut() else {
+				out.push(RequestMessage::Assistant(next));
+				continue;
+			};
+			// Each message keeps one reasoning block and signature, so never merge two.
+			if prev.reasoning_content.is_some() && next.reasoning_content.is_some() {
+				out.push(RequestMessage::Assistant(next));
+				continue;
+			}
+			let completions::RequestAssistantMessage {
+				content,
+				refusal,
+				name,
+				audio,
+				tool_calls,
+				function_call,
+				reasoning_content,
+				reasoning_signature,
+			} = next;
+			append_content(&mut prev.content, content);
+			if let Some(calls) = tool_calls {
+				prev.tool_calls.get_or_insert_with(Vec::new).extend(calls);
+			}
+			prev.refusal = prev.refusal.take().or(refusal);
+			prev.name = prev.name.take().or(name);
+			prev.audio = prev.audio.take().or(audio);
+			prev.function_call = prev.function_call.take().or(function_call);
+			if prev.reasoning_content.is_none() {
+				prev.reasoning_content = reasoning_content;
+				prev.reasoning_signature = reasoning_signature;
+			}
+		}
+		out
+	}
+
 	fn cache_breakpoint(
 		breakpoint: Option<responses::PromptCacheBreakpointConfig>,
 	) -> Option<completions::PromptCacheBreakpointParam> {
@@ -373,6 +474,8 @@ pub mod from_responses {
 			}
 		}
 
+		let messages = merge_assistant_messages(messages);
+
 		let tools: Option<Vec<completions::Tool>> = req.tools.as_ref().map(|tools| {
 			tools
 				.iter()
@@ -462,6 +565,15 @@ pub mod from_responses {
 			None
 		};
 
+		// Only function tools survive translation. Some providers reject a tool choice
+		// without tools, so drop tool settings when none remain.
+		let tools = tools.filter(|tools| !tools.is_empty());
+		let (tool_choice, parallel_tool_calls) = if tools.is_some() {
+			(tool_choice, req.parallel_tool_calls)
+		} else {
+			(None, None)
+		};
+
 		#[allow(deprecated)]
 		completions::Request {
 			messages,
@@ -476,7 +588,7 @@ pub mod from_responses {
 			temperature: req.temperature,
 			top_p: req.top_p,
 			max_completion_tokens: req.max_output_tokens,
-			parallel_tool_calls: req.parallel_tool_calls,
+			parallel_tool_calls,
 			vendor_extensions: completions::RequestVendorExtensions::default(),
 			max_tokens: None,
 			stop: None,
