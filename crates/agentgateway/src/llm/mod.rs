@@ -3251,6 +3251,15 @@ impl AIProvider {
 			response_policies.request_traceparent.as_ref(),
 		);
 
+		let body = if matches!(self, AIProvider::Copilot(_))
+			&& chat_translation
+				.is_some_and(|translation| translation.output == ChatFormat::OpenAIResponses)
+		{
+			copilot::normalize_responses_stream(body, buffer)
+		} else {
+			body
+		};
+
 		let resp = Response::from_parts(parts, body);
 		let resp = if matches!(input_format, InputFormat::Detect(_)) {
 			resp

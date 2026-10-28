@@ -35,7 +35,7 @@ pub fn append_done_on_success(body: Body) -> Body {
 
 /// Some upstreams end the stream with a `data: [DONE]` lacking the blank line that terminates
 /// it. Dispatch it rather than failing with `UnexpectedEof`; any other unterminated event still fails.
-struct DoneTolerantSseDecoder(SseDecoder<Bytes>);
+pub(crate) struct DoneTolerantSseDecoder(pub(crate) SseDecoder<Bytes>);
 
 impl Decoder for DoneTolerantSseDecoder {
 	type Item = Frame<Bytes>;
