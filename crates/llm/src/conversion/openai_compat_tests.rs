@@ -220,3 +220,50 @@ fn tool_choice_is_kept_with_function_tools() {
 	assert_eq!(request["tool_choice"], "auto");
 	assert_eq!(request["parallel_tool_calls"], true);
 }
+
+// OpenAI rejects replayed function call items whose ID does not start with "fc", so a
+// translated tool call must not reuse its call_id as the item ID.
+#[test]
+fn translated_function_call_item_id_starts_with_fc() {
+	let response = translate(include_bytes!(
+		"../tests/response/completions/tool_call.json"
+	));
+	let calls: Vec<&Value> = response["output"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.filter(|item| item["type"] == "function_call")
+		.collect();
+	assert!(!calls.is_empty());
+	for call in calls {
+		let id = call["id"].as_str().unwrap();
+		let call_id = call["call_id"].as_str().unwrap();
+		assert!(id.starts_with("fc"), "{call}");
+		assert!(call_id.starts_with("call_"), "{call}");
+		assert_ne!(id, call_id);
+	}
+}
+
+#[test]
+fn replayed_function_call_item_ids_are_normalized() {
+	let mut request: crate::types::responses::Request = serde_json::from_value(json!({
+		"model": "gpt-5",
+		"input": [
+			{"role": "user", "content": "hi"},
+			{"type": "function_call", "id": "call_abc", "call_id": "call_abc", "name": "f", "arguments": "{}"},
+			{"type": "function_call", "id": "fc_def", "call_id": "call_def", "name": "f", "arguments": "{}"},
+			{"type": "function_call", "call_id": "call_ghi", "name": "f", "arguments": "{}"},
+			{"type": "function_call", "id": "y+yjAV6vzEZT3r7Ns+2Py+9vDdH/opaque", "call_id": "call_jkl", "name": "f", "arguments": "{}"},
+			{"type": "message", "id": "msg_1", "role": "assistant", "content": [{"type": "output_text", "text": "ok"}]}
+		]
+	}))
+	.unwrap();
+	request.normalize_function_call_ids();
+	let input = serde_json::to_value(&request).unwrap()["input"].clone();
+	assert_eq!(input[1]["id"], "fc_abc");
+	assert_eq!(input[1]["call_id"], "call_abc");
+	assert_eq!(input[2]["id"], "fc_def");
+	assert!(input[3].get("id").is_none());
+	assert_eq!(input[4]["id"], "y+yjAV6vzEZT3r7Ns+2Py+9vDdH/opaque");
+	assert_eq!(input[5]["id"], "msg_1");
+}

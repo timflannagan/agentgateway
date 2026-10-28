@@ -617,6 +617,18 @@ pub mod to_responses {
 	use std::collections::HashMap;
 	use std::time::Instant;
 
+	/// Responses function call item ID for a Chat Completions tool call ID.
+	///
+	/// Responses keeps the item ID separate from `call_id`, and OpenAI rejects replayed
+	/// function call items whose ID does not start with `fc`. Derive it from the call ID so
+	/// streamed events and the final item agree without extra state.
+	fn function_call_item_id(call_id: &str) -> String {
+		if call_id.starts_with("fc") {
+			return call_id.to_string();
+		}
+		format!("fc_{}", call_id.strip_prefix("call_").unwrap_or(call_id))
+	}
+
 	use agent_core::strng;
 	use agent_http::Body;
 	use bytes::Bytes;
@@ -703,7 +715,7 @@ pub mod to_responses {
 									call_id: f.id.clone(),
 									name: f.function.name.clone(),
 									caller: None,
-									id: Some(f.id.clone()),
+									id: Some(function_call_item_id(&f.id)),
 									status: Some(responses::OutputStatus::Completed),
 									namespace: None,
 									r#async: None,
@@ -1050,7 +1062,7 @@ pub mod to_responses {
 													namespace: None,
 													name: entry.1.clone(),
 													caller: None,
-													id: Some(entry.0.clone()),
+													id: Some(function_call_item_id(&entry.0)),
 													status: Some(OutputStatus::InProgress),
 													r#async: None,
 												}),
@@ -1068,7 +1080,7 @@ pub mod to_responses {
 											ResponseStreamEvent::ResponseFunctionCallArgumentsDelta(
 												ResponseFunctionCallArgumentsDeltaEvent {
 													sequence_number,
-													item_id: entry.0.clone(),
+													item_id: function_call_item_id(&entry.0),
 													output_index: entry.3,
 													delta: args.clone(),
 												},
@@ -1277,7 +1289,7 @@ pub mod to_responses {
 						sequence_number: *sequence_number,
 						output_index,
 						name: Some(name.clone()),
-						item_id: item_id.clone(),
+						item_id: function_call_item_id(&item_id),
 						arguments: buffer.clone(),
 					},
 				),
@@ -1289,7 +1301,7 @@ pub mod to_responses {
 				namespace: None,
 				name,
 				caller: None,
-				id: Some(item_id),
+				id: Some(function_call_item_id(&item_id)),
 				status: Some(OutputStatus::Completed),
 				r#async: None,
 			});

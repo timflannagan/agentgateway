@@ -475,6 +475,8 @@ fn render_openai_responses(
 ) -> Result<Vec<u8>, AIError> {
 	match req {
 		types::ChatRequest::Responses(mut req) => {
+			// Sessions that switched from a translated provider can replay call_ IDs.
+			req.normalize_function_call_ids();
 			apply_openai_moderation(&mut req.moderation, ctx)?;
 			serde_json::to_vec(&req).map_err(AIError::RequestMarshal)
 		},

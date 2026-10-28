@@ -25,6 +25,25 @@ pub enum RequestInput {
 pub struct RawInputItem(Value);
 
 impl RawInputItem {
+	/// Rewrite a function call item ID that OpenAI would reject.
+	///
+	/// Translated responses used to reuse the tool `call_id` as the item ID. Clients store
+	/// those items and replay them, and OpenAI requires function call item IDs to start with
+	/// `fc`. The ID is optional, so derive a valid one rather than dropping it. Other IDs,
+	/// including opaque ones issued by the provider, are left alone.
+	fn normalize_function_call_id(&mut self) {
+		if self.0.get("type").and_then(Value::as_str) != Some("function_call") {
+			return;
+		}
+		let Some(Value::String(id)) = self.0.get_mut("id") else {
+			return;
+		};
+		// Only rewrite IDs we minted. Provider-issued IDs are opaque and must pass through.
+		if let Some(suffix) = id.strip_prefix("call_") {
+			*id = format!("fc_{suffix}");
+		}
+	}
+
 	fn from_typed(item: InputItem) -> Self {
 		Self(serde_json::to_value(item).expect("responses input item should serialize"))
 	}
@@ -856,6 +875,16 @@ impl From<SimpleChatCompletionMessage> for InputItem {
 }
 
 impl Request {
+	/// Rewrite replayed function call item IDs that OpenAI would reject. See
+	/// [`RawInputItem::normalize_function_call_id`].
+	pub fn normalize_function_call_ids(&mut self) {
+		if let RequestInput::Items(items) = &mut self.input {
+			items
+				.iter_mut()
+				.for_each(RawInputItem::normalize_function_call_id);
+		}
+	}
+
 	fn take_input_as_items(&mut self) -> Vec<RawInputItem> {
 		match std::mem::replace(&mut self.input, RequestInput::Items(Vec::new())) {
 			RequestInput::Text(text) => vec![RawInputItem::from_user_text(text)],
