@@ -1378,6 +1378,35 @@ pub mod typed {
 			}
 		}
 
+		/// Rewrite developer messages as system messages, for upstreams that accept the
+		/// system role but silently ignore the developer role.
+		pub fn developer_messages_as_system(&mut self) {
+			for message in &mut self.messages {
+				if let RequestMessage::Developer(developer) = message {
+					let content = match std::mem::replace(
+						&mut developer.content,
+						RequestDeveloperMessageContent::Text(String::new()),
+					) {
+						RequestDeveloperMessageContent::Text(text) => RequestSystemMessageContent::Text(text),
+						RequestDeveloperMessageContent::Array(parts) => RequestSystemMessageContent::Array(
+							parts
+								.into_iter()
+								.map(|part| match part {
+									RequestDeveloperMessageContentPart::Text(text) => {
+										RequestSystemMessageContentPart::Text(text)
+									},
+								})
+								.collect(),
+						),
+					};
+					*message = RequestMessage::System(RequestSystemMessage {
+						content,
+						name: developer.name.take(),
+					});
+				}
+			}
+		}
+
 		/// Remove `extra_content` (Gemini thought signatures) from replayed tool calls,
 		/// for providers that would reject or mishandle the unknown field.
 		pub fn strip_tool_call_extra_content(&mut self) {

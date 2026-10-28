@@ -427,6 +427,13 @@ fn render_openai_completions(
 			if !preserves_gemini_signatures(ctx.provider, req.model.as_deref()) {
 				request.strip_tool_call_extra_content();
 			}
+			// Copilot's Completions endpoint drops developer messages for Claude models, which
+			// would discard the Responses `instructions` and system/developer input items.
+			if matches!(ctx.provider, AIProvider::Copilot(_))
+				&& copilot::Provider::is_anthropic_model(request.model.as_deref().unwrap_or_default())
+			{
+				request.developer_messages_as_system();
+			}
 			let namespaces = translated.namespaces;
 			if !namespaces.is_empty() {
 				provider_state = Some(ProviderState::OpenAICompletions {

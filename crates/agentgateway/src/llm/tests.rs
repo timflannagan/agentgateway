@@ -2304,6 +2304,77 @@ async fn copilot_anthropic_model_uses_messages_route() {
 	assert_eq!(forwarded_json["max_tokens"], json!(64));
 }
 
+async fn copilot_responses_forwarded_messages(model: &str) -> (RouteType, Value) {
+	use crate::http::auth::BackendInfo;
+	use crate::test_helpers::proxymock::setup_proxy_test;
+	use crate::types::agent::BackendTarget;
+
+	let provider = AIProvider::Copilot(copilot::Provider {
+		model_override: None,
+	});
+	let inputs = setup_proxy_test("{}").unwrap().pi;
+	let backend_info = BackendInfo {
+		target: BackendTarget::Invalid,
+		call_target: Target::from(("api.githubcopilot.com", 443)),
+		inputs,
+	};
+	let body = json!({
+		"model": model,
+		"instructions": "top-level instructions",
+		"input": [
+			{"role": "system", "content": "system item"},
+			{"role": "developer", "content": "developer item"},
+			{"role": "user", "content": "say hi"}
+		]
+	});
+	let req = ::http::Request::builder()
+		.uri("/v1/responses")
+		.header(::http::header::CONTENT_TYPE, "application/json")
+		.body(Body::from(serde_json::to_vec(&body).unwrap()))
+		.unwrap();
+
+	let RequestResult::Success {
+		request: forwarded,
+		upstream_route_type,
+		..
+	} = provider
+		.process_responses_request(&backend_info, None, req, false, &mut None, None)
+		.await
+		.expect("Copilot responses request should process")
+	else {
+		panic!("expected forwarded request");
+	};
+	let forwarded_body = forwarded.collect().await.unwrap().to_bytes();
+	let forwarded_json: Value =
+		serde_json::from_slice(&forwarded_body).expect("forwarded request should be JSON");
+	(upstream_route_type, forwarded_json["messages"].clone())
+}
+
+// Copilot's Completions endpoint ignores developer messages for Claude models, so the
+// Responses -> Completions translation must send instructions as system messages there.
+#[tokio::test]
+async fn copilot_anthropic_responses_sends_instructions_as_system() {
+	let (route, messages) = copilot_responses_forwarded_messages("claude-sonnet-4").await;
+	assert_eq!(route, RouteType::Completions);
+	let roles: Vec<&str> = messages
+		.as_array()
+		.unwrap()
+		.iter()
+		.map(|m| m["role"].as_str().unwrap())
+		.collect();
+	assert_eq!(roles, ["system", "system", "system", "user"]);
+	let text = messages.to_string();
+	for expected in ["top-level instructions", "system item", "developer item"] {
+		assert!(text.contains(expected), "missing {expected:?} in {text}");
+	}
+}
+
+#[tokio::test]
+async fn copilot_openai_responses_passes_through() {
+	let (route, _) = copilot_responses_forwarded_messages("gpt-5").await;
+	assert_eq!(route, RouteType::Responses);
+}
+
 #[test]
 fn copilot_embeddings_response_adds_missing_openai_fields() {
 	let provider = AIProvider::Copilot(copilot::Provider {
