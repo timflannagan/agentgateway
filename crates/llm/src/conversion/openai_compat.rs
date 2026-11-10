@@ -200,7 +200,30 @@ pub mod from_responses {
 			InputParam::Items(items) => items.clone(),
 		};
 
+		// Chat Completions tool messages carry only text, so images returned by a tool
+		// follow the tool results as a user message. Hold them until the run of tool
+		// results ends, since an assistant's tool calls must be answered back to back.
+		let mut tool_images = Vec::new();
+		let flush_tool_images =
+			|messages: &mut Vec<completions::RequestMessage>,
+			 images: &mut Vec<completions::RequestUserMessageContentPart>| {
+				if !images.is_empty() {
+					messages.push(completions::RequestMessage::User(
+						completions::RequestUserMessage {
+							content: completions::RequestUserMessageContent::Array(std::mem::take(images)),
+							name: None,
+						},
+					));
+				}
+			};
+
 		for item in items {
+			if !matches!(
+				item,
+				InputItem::Item(Item::FunctionCallOutput(_) | Item::CustomToolCallOutput(_))
+			) {
+				flush_tool_images(&mut messages, &mut tool_images);
+			}
 			match item {
 				InputItem::EasyMessage(msg) => match msg.role {
 					ResponsesRole::User => {
@@ -423,14 +446,19 @@ pub mod from_responses {
 						};
 						let output_text = match output.output {
 							responses::FunctionCallOutput::Text(text) => text,
-							responses::FunctionCallOutput::Content(parts) => parts
-								.iter()
-								.filter_map(|part| match part {
-									InputContent::InputText(t) => Some(t.text.clone()),
-									_ => None,
-								})
-								.collect::<Vec<_>>()
-								.join("\n"),
+							responses::FunctionCallOutput::Content(parts) => {
+								let mut text = Vec::new();
+								for part in parts {
+									match part {
+										InputContent::InputText(t) => text.push(t.text),
+										image @ InputContent::InputImage(_) => {
+											tool_images.extend(user_content_part(image))
+										},
+										_ => {},
+									}
+								}
+								text.join("\n")
+							},
 						};
 						messages.push(completions::RequestMessage::Tool(
 							completions::RequestToolMessage {
@@ -478,6 +506,7 @@ pub mod from_responses {
 				},
 			}
 		}
+		flush_tool_images(&mut messages, &mut tool_images);
 
 		let messages = merge_assistant_messages(messages);
 

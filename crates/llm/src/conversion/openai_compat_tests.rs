@@ -314,3 +314,43 @@ fn responses_user_images_become_chat_image_parts() {
 		])
 	);
 }
+
+#[test]
+fn responses_tool_output_images_follow_the_tool_results() {
+	let png = "data:image/png;base64,iVBORw0KGgo=";
+	let request: crate::types::responses::Request = serde_json::from_value(json!({
+		"model": "vision-model",
+		"input": [
+			{"role": "user", "content": "Read both screenshots."},
+			{"type": "function_call", "call_id": "call_a", "name": "read", "arguments": "{}"},
+			{"type": "function_call", "call_id": "call_b", "name": "read", "arguments": "{}"},
+			{
+				"type": "function_call_output",
+				"call_id": "call_a",
+				"output": [
+					{"type": "input_text", "text": "Image read successfully"},
+					{"type": "input_image", "image_url": png}
+				]
+			},
+			{"type": "function_call_output", "call_id": "call_b", "output": "not an image"},
+			{"role": "user", "content": "What do they show?"}
+		],
+		"store": false
+	}))
+	.unwrap();
+
+	let translated = super::from_responses::translate_request(&request).unwrap();
+	let body: Value = serde_json::to_value(&translated.request).unwrap();
+	let messages = body["messages"].as_array().unwrap();
+
+	let roles: Vec<_> = messages
+		.iter()
+		.map(|m| m["role"].as_str().unwrap())
+		.collect();
+	assert_eq!(roles, ["user", "assistant", "tool", "tool", "user", "user"]);
+	assert_eq!(messages[2]["content"], "Image read successfully");
+	assert_eq!(
+		messages[4]["content"],
+		json!([{"type": "image_url", "image_url": {"url": png, "detail": "auto"}}])
+	);
+}
